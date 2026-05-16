@@ -1,6 +1,6 @@
 {
   "name": "agentln",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cross-platform CLI to manage symlinks between CLAUDE.md and AGENTS.md across a repository.",
   "keywords": [
     "claude",
@@ -41,14 +41,14 @@
     "test": "node --test dist/test"
   },
   "dependencies": {
-    "picocolors": "^1.1.1",
-    "prompts": "^2.4.2"
+    "picocolors": "1.1.1",
+    "prompts": "2.4.2"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "@types/prompts": "^2.4.9",
-    "rimraf": "^6.0.1",
-    "typescript": "^5.7.2"
+    "@types/node": "25.8.0",
+    "@types/prompts": "2.4.9",
+    "rimraf": "6.1.3",
+    "typescript": "6.0.3"
   },
   "repository": {
     "type": "git",
