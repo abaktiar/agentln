@@ -122,16 +122,6 @@ source of truth" guarantee.
 - Monorepos with multiple workspaces, each having their own per-package
   instructions: `agentln` reconciles every workspace in one pass.
 
-## Publishing
-
-```bash
-npm run build
-npm publish --access public
-```
-
-The `prepublishOnly` script rebuilds `dist/` and ships only `dist/` plus the
-README and license.
-
 ## License
 
 MIT
