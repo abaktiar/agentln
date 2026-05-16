@@ -1,0 +1,61 @@
+{
+  "name": "agentln",
+  "version": "0.1.0",
+  "description": "Cross-platform CLI to manage symlinks between CLAUDE.md and AGENTS.md across a repository.",
+  "keywords": [
+    "claude",
+    "agents",
+    "symlink",
+    "monorepo",
+    "cli",
+    "claude-code",
+    "agents-md"
+  ],
+  "license": "MIT",
+  "author": "abaktiar",
+  "type": "module",
+  "bin": {
+    "agentln": "dist/bin.js"
+  },
+  "main": "dist/cli.js",
+  "exports": {
+    ".": {
+      "import": "./dist/cli.js",
+      "types": "./dist/cli.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "clean": "rimraf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "start": "node dist/bin.js",
+    "test": "node --test dist/test"
+  },
+  "dependencies": {
+    "picocolors": "^1.1.1",
+    "prompts": "^2.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/prompts": "^2.4.9",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/abaktiar/agentln.git"
+  },
+  "bugs": {
+    "url": "https://github.com/abaktiar/agentln/issues"
+  },
+  "homepage": "https://github.com/abaktiar/agentln#readme"
+}
