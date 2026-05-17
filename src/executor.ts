@@ -14,26 +14,38 @@ export interface ExecuteOptions {
 const IS_WINDOWS = process.platform === "win32";
 
 /**
- * On Windows, `fs.symlink` needs an explicit type hint. We always use `file`
- * for our use case (linking a single file). On POSIX systems the type arg is
- * ignored.
+ * On Windows, `fs.symlink` needs an explicit type hint ("file" or "dir").
+ * On POSIX systems the type arg is ignored.
  */
-async function createRelativeSymlink(linkPath: string, sourcePath: string): Promise<void> {
+async function createRelativeSymlink(
+  linkPath: string,
+  sourcePath: string,
+  isDirectory: boolean,
+): Promise<void> {
   const target = path.relative(path.dirname(linkPath), sourcePath);
-  await fs.symlink(target, linkPath, IS_WINDOWS ? "file" : undefined);
+  const winType = isDirectory ? "dir" : "file";
+  await fs.symlink(target, linkPath, IS_WINDOWS ? winType : undefined);
 }
 
-async function safeUnlink(p: string): Promise<void> {
-  try {
-    await fs.unlink(p);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") throw err;
+/** Remove a file, symlink, or directory tree. No-op if the path is missing. */
+async function safeRemove(p: string): Promise<void> {
+  await fs.rm(p, { recursive: true, force: true });
+}
+
+async function ensureParentDir(p: string): Promise<void> {
+  await fs.mkdir(path.dirname(p), { recursive: true });
+}
+
+async function copyEntry(
+  sourcePath: string,
+  destPath: string,
+  isDirectory: boolean,
+): Promise<void> {
+  if (isDirectory) {
+    await fs.cp(sourcePath, destPath, { recursive: true });
+  } else {
+    await fs.copyFile(sourcePath, destPath);
   }
-}
-
-async function copyFile(sourcePath: string, destPath: string): Promise<void> {
-  await fs.copyFile(sourcePath, destPath);
 }
 
 function isSymlinkPermissionError(err: unknown): boolean {
@@ -67,25 +79,39 @@ export async function executeAction(
     }
 
     case "create-symlink": {
+      const noun = action.isDirectory ? "directory symlink" : "symlink";
       if (options.dryRun) {
         const verb = action.replacesExisting ? "replace" : "create";
-        return { action, ok: true, message: `would ${verb} symlink` };
+        return { action, ok: true, message: `would ${verb} ${noun}` };
+      }
+
+      // Guard real-content replacement (real file or real directory) behind --force.
+      if (action.replacesExisting && action.replacesRegularFile && action.isDirectory) {
+        return {
+          action,
+          ok: false,
+          message:
+            `${action.linkPath} is a non-empty directory; refusing to replace it ` +
+            "with a symlink without --force (this would delete its contents).",
+        };
       }
 
       try {
-        if (action.replacesExisting) await safeUnlink(action.linkPath);
-        await createRelativeSymlink(action.linkPath, action.sourcePath);
-        return { action, ok: true, message: "symlink created" };
+        if (action.replacesExisting) await safeRemove(action.linkPath);
+        await ensureParentDir(action.linkPath);
+        await createRelativeSymlink(action.linkPath, action.sourcePath, action.isDirectory);
+        return { action, ok: true, message: `${noun} created` };
       } catch (err) {
         if (IS_WINDOWS && isSymlinkPermissionError(err) && options.copyFallback) {
           try {
-            await safeUnlink(action.linkPath);
-            await copyFile(action.sourcePath, action.linkPath);
+            await safeRemove(action.linkPath);
+            await ensureParentDir(action.linkPath);
+            await copyEntry(action.sourcePath, action.linkPath, action.isDirectory);
             return {
               action,
               ok: true,
               message:
-                "symlink not permitted on this system; wrote a file copy instead. " +
+                `${noun} not permitted on this system; wrote a ${action.isDirectory ? "recursive copy" : "file copy"} instead. ` +
                 "Re-run after enabling Developer Mode or with admin privileges " +
                 "to use real symlinks.",
               fellBackToCopy: true,
@@ -99,9 +125,9 @@ export async function executeAction(
             action,
             ok: false,
             message:
-              "creating a symlink was denied by the OS. On Windows, enable " +
+              `creating a ${noun} was denied by the OS. On Windows, enable ` +
               "Developer Mode or run an elevated shell, or re-run with " +
-              "--copy-fallback to write a regular file copy instead.",
+              `--copy-fallback to write a ${action.isDirectory ? "recursive copy" : "regular file copy"} instead.`,
           };
         }
         return { action, ok: false, message: errorMessage(err) };
@@ -109,11 +135,12 @@ export async function executeAction(
     }
 
     case "promote-to-source": {
+      const noun = action.isDirectory ? "directory" : "file";
       if (options.dryRun) {
         return {
           action,
           ok: true,
-          message: `would rename ${path.basename(action.fromPath)} → ${path.basename(action.toPath)} and link back`,
+          message: `would rename ${noun} ${path.basename(action.fromPath)} → ${path.basename(action.toPath)} and link back`,
         };
       }
       try {
@@ -134,24 +161,25 @@ export async function executeAction(
               `${action.toPath} already exists; refusing to overwrite without --force.`,
           };
         }
-        if (targetExists) await safeUnlink(action.toPath);
+        if (targetExists) await safeRemove(action.toPath);
+        await ensureParentDir(action.toPath);
         await fs.rename(action.fromPath, action.toPath);
-        await createRelativeSymlink(action.fromPath, action.toPath);
+        await createRelativeSymlink(action.fromPath, action.toPath, action.isDirectory);
         return {
           action,
           ok: true,
-          message: "promoted file to source and linked back",
+          message: `promoted ${noun} to source and linked back`,
         };
       } catch (err) {
         if (IS_WINDOWS && isSymlinkPermissionError(err) && options.copyFallback) {
           try {
-            await copyFile(action.toPath, action.fromPath);
+            await copyEntry(action.toPath, action.fromPath, action.isDirectory);
             return {
               action,
               ok: true,
               message:
-                "symlink not permitted; wrote a file copy as fallback. The " +
-                "two files will diverge on subsequent edits.",
+                `symlink not permitted; wrote a ${action.isDirectory ? "recursive copy" : "file copy"} as fallback. ` +
+                "The two paths will diverge on subsequent edits.",
               fellBackToCopy: true,
             };
           } catch (copyErr) {

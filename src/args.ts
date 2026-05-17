@@ -7,7 +7,7 @@ import {
   type SourceName,
 } from "./types.js";
 
-const HELP_TEXT = `agentln — manage CLAUDE.md ⇄ AGENTS.md symlinks across a repo
+const HELP_TEXT = `agentln — manage CLAUDE.md ⇄ AGENTS.md and .claude/skills ⇄ .agents/skills symlinks across a repo
 
 Usage:
   npx agentln [options]
@@ -16,10 +16,12 @@ Usage:
 Options:
   --root <path>        Repository root (default: current working directory).
   --source <name>      Use CLAUDE.md or AGENTS.md as source of truth (skips prompt).
+                       Also drives .claude/skills vs .agents/skills as the source-of-truth dir.
   -y, --yes            Non-interactive mode (assume defaults for every prompt).
   --dry-run            Show planned changes without writing anything.
-  --force              Overwrite divergent regular files when replacing with a symlink.
-  --copy-fallback      On Windows, fall back to a file copy if symlink creation is denied.
+  --force              Overwrite divergent regular files or non-empty skills directories
+                       when replacing with a symlink.
+  --copy-fallback      On Windows, fall back to a recursive copy if symlink creation is denied.
   --no-copy-fallback   Disable the copy fallback (default).
   --verbose            Print debug-level information.
   -h, --help           Show this help.

@@ -1,11 +1,12 @@
 # agentln
 
-Cross-platform CLI that keeps `CLAUDE.md` and `AGENTS.md` in sync across an
-entire repository by managing **relative symlinks** between them.
+Cross-platform CLI that keeps `CLAUDE.md` and `AGENTS.md` (and
+`.claude/skills/` and `.agents/skills/`) in sync across an entire repository
+by managing **relative symlinks** between them.
 
 You make **one decision at the repository root** — which filename is the source
 of truth — and `agentln` applies that decision recursively to every directory
-in the repo.
+in the repo, for both the markdown pair and the skills directory pair.
 
 - Works on macOS, Linux, and Windows (PowerShell, Git Bash, WSL).
 - Uses Node's native `fs` symlink APIs. Never shells out to `ln`, `bash`, or
@@ -50,10 +51,27 @@ that contains either file is reconciled to the same convention:
 
 `agentln` is idempotent. Running it twice in a row will say "already in sync."
 
+### Skills directories
+
+The same source-of-truth decision is applied to `.claude/skills/` and
+`.agents/skills/` if either exists in a directory. With `CLAUDE.md` chosen as
+source, `.claude/skills/` becomes the source-of-truth directory and
+`.agents/skills/` is reconciled to a symlink pointing at `../.claude/skills`
+(and vice versa). The parent `.claude/` or `.agents/` directory is created
+automatically when needed.
+
+Replacing a non-empty skills directory with a symlink requires `--force`, so
+agentln will not silently delete a populated skills tree.
+
+Only the `skills/` subdirectory is managed — other things under `.claude/` or
+`.agents/` (e.g. `commands/`, `hooks/`, `settings.json`) are left alone
+because they don't share a portable convention across agents.
+
 ### Symlink format
 
-Symlinks are always **relative** (`AGENTS.md → CLAUDE.md`), never absolute.
-This keeps the repo portable across machines and clones.
+Symlinks are always **relative** (`AGENTS.md → CLAUDE.md`,
+`.agents/skills → ../.claude/skills`), never absolute. This keeps the repo
+portable across machines and clones.
 
 ### Ignored directories
 
@@ -72,7 +90,8 @@ agentln [options]
 --source <name>      Use CLAUDE.md or AGENTS.md as source of truth (skips prompt).
 -y, --yes            Non-interactive mode. Accepts defaults for every prompt.
 --dry-run            Show planned changes without writing anything.
---force              Overwrite divergent regular files when replacing with a symlink.
+--force              Overwrite divergent regular files or non-empty skills directories
+                     when replacing with a symlink.
 --copy-fallback      On Windows, copy the file instead of failing when symlink
                      creation is denied.
 --no-copy-fallback   Disable the copy fallback (default).

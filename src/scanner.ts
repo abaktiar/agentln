@@ -2,8 +2,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import {
+  AGENTS_DIR,
   AGENTS_FILE,
+  CLAUDE_DIR,
   CLAUDE_FILE,
+  SKILLS_SUBDIR,
+  sourceDirFor,
   type DirState,
   type EntryKind,
   type EntryState,
@@ -35,23 +39,27 @@ export interface ScanOptions {
 }
 
 /**
- * Classify a single CLAUDE.md/AGENTS.md candidate path. Resolves the symlink
- * target without following it, so we can decide whether it already points to
- * its sibling source file.
+ * Classify a single CLAUDE.md/AGENTS.md candidate path, or a managed
+ * directory path (e.g. .claude/skills). Resolves the symlink target without
+ * following it, so we can decide whether it already points at its sibling
+ * source. `expectedKind` determines whether a "real" entry should be a file
+ * or a directory; the returned EntryKind reuses `regular-file` to mean
+ * "real content at this path" in either mode.
+ *
+ * For directories, `expectedSiblingTarget` is the relative path that a
+ * correctly-shaped symlink should point to (e.g. `../.claude/skills`).
  */
 export async function classifyEntry(
   filePath: string,
-  expectedSiblingSource: SourceName | null,
+  expectedSiblingTarget: string | null,
+  options: { expectedKind?: "file" | "directory" } = {},
 ): Promise<EntryState> {
+  const expectedKind = options.expectedKind ?? "file";
   let lstat;
   try {
     lstat = await fs.lstat(filePath);
   } catch {
     return { path: filePath, kind: "missing" };
-  }
-
-  if (lstat.isDirectory()) {
-    return { path: filePath, kind: "directory" };
   }
 
   if (lstat.isSymbolicLink()) {
@@ -69,20 +77,35 @@ export async function classifyEntry(
       return { path: filePath, kind: "broken-symlink", linkTarget: target };
     }
 
-    if (!stat.isFile()) {
+    const targetMatchesKind =
+      expectedKind === "file" ? stat.isFile() : stat.isDirectory();
+    if (!targetMatchesKind) {
       return { path: filePath, kind: "incorrect-symlink", linkTarget: target };
     }
 
-    if (expectedSiblingSource) {
-      // We accept either the bare filename or "./<filename>" as correct.
-      const normalised = target.replace(/^\.[\\/]/, "");
-      if (normalised === expectedSiblingSource) {
+    if (expectedSiblingTarget) {
+      const normalised = normaliseLinkTarget(target);
+      if (normalised === normaliseLinkTarget(expectedSiblingTarget)) {
         return { path: filePath, kind: "correct-symlink", linkTarget: target };
       }
       return { path: filePath, kind: "incorrect-symlink", linkTarget: target };
     }
 
     return { path: filePath, kind: "incorrect-symlink", linkTarget: target };
+  }
+
+  if (expectedKind === "directory") {
+    if (lstat.isDirectory()) {
+      return { path: filePath, kind: "regular-file" };
+    }
+    if (lstat.isFile()) {
+      return { path: filePath, kind: "other" };
+    }
+    return { path: filePath, kind: "other" };
+  }
+
+  if (lstat.isDirectory()) {
+    return { path: filePath, kind: "directory" };
   }
 
   if (lstat.isFile()) {
@@ -92,26 +115,49 @@ export async function classifyEntry(
   return { path: filePath, kind: "other" };
 }
 
+function normaliseLinkTarget(target: string): string {
+  // Accept both POSIX and Windows separators; strip a leading "./".
+  return target.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
 /**
- * Build the per-directory state for the two managed files. `source` is the
- * repository-wide source-of-truth name; the other file is the link.
+ * Build the per-directory state for the two managed files and the two
+ * managed skills directories. `source` is the repository-wide source-of-truth
+ * name; the other file (and corresponding skills dir) is the link.
  */
 export async function readDirState(
   dir: string,
   source: SourceName,
 ): Promise<DirState> {
-  const linkName: SourceName = source === CLAUDE_FILE ? AGENTS_FILE : CLAUDE_FILE;
-  const [claude, agents] = await Promise.all([
+  const sourceDir = sourceDirFor(source);
+  const linkFile = source === CLAUDE_FILE ? AGENTS_FILE : CLAUDE_FILE;
+  const linkDir = sourceDir === CLAUDE_DIR ? AGENTS_DIR : CLAUDE_DIR;
+
+  // For the file pair, a correct link points at the bare source filename.
+  // For the skills pair, a correct link points at "../<source-dir>/skills".
+  const skillsLinkTarget = `../${sourceDir}/${SKILLS_SUBDIR}`;
+
+  const [claude, agents, claudeSkills, agentsSkills] = await Promise.all([
     classifyEntry(
       path.join(dir, CLAUDE_FILE),
-      source === CLAUDE_FILE ? null : linkName === CLAUDE_FILE ? source : null,
+      source === CLAUDE_FILE ? null : linkFile === CLAUDE_FILE ? source : null,
     ),
     classifyEntry(
       path.join(dir, AGENTS_FILE),
-      source === AGENTS_FILE ? null : linkName === AGENTS_FILE ? source : null,
+      source === AGENTS_FILE ? null : linkFile === AGENTS_FILE ? source : null,
+    ),
+    classifyEntry(
+      path.join(dir, CLAUDE_DIR, SKILLS_SUBDIR),
+      sourceDir === CLAUDE_DIR ? null : linkDir === CLAUDE_DIR ? skillsLinkTarget : null,
+      { expectedKind: "directory" },
+    ),
+    classifyEntry(
+      path.join(dir, AGENTS_DIR, SKILLS_SUBDIR),
+      sourceDir === AGENTS_DIR ? null : linkDir === AGENTS_DIR ? skillsLinkTarget : null,
+      { expectedKind: "directory" },
     ),
   ]);
-  return { dir, claude, agents };
+  return { dir, claude, agents, claudeSkills, agentsSkills };
 }
 
 /**
@@ -137,9 +183,15 @@ export async function scanRepository(
 
     let hasClaude = false;
     let hasAgents = false;
+    let hasClaudeManagedDir = false;
+    let hasAgentsManagedDir = false;
     const childDirs: string[] = [];
 
     for (const entry of entries) {
+      if (entry.isDirectory() || entry.isSymbolicLink()) {
+        if (entry.name === CLAUDE_DIR) hasClaudeManagedDir = true;
+        else if (entry.name === AGENTS_DIR) hasAgentsManagedDir = true;
+      }
       if (entry.isDirectory()) {
         if (ignored.has(entry.name)) continue;
         if (!options.followHiddenDirs && entry.name.startsWith(".")) continue;
@@ -150,7 +202,13 @@ export async function scanRepository(
       }
     }
 
-    if (isRoot || hasClaude || hasAgents) {
+    if (
+      isRoot ||
+      hasClaude ||
+      hasAgents ||
+      hasClaudeManagedDir ||
+      hasAgentsManagedDir
+    ) {
       results.push(await readDirState(dir, source));
     }
 

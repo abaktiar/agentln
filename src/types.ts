@@ -1,7 +1,16 @@
 export const CLAUDE_FILE = "CLAUDE.md";
 export const AGENTS_FILE = "AGENTS.md";
 
+export const CLAUDE_DIR = ".claude";
+export const AGENTS_DIR = ".agents";
+export const SKILLS_SUBDIR = "skills";
+
 export type SourceName = typeof CLAUDE_FILE | typeof AGENTS_FILE;
+export type SourceDirName = typeof CLAUDE_DIR | typeof AGENTS_DIR;
+
+export function sourceDirFor(source: SourceName): SourceDirName {
+  return source === CLAUDE_FILE ? CLAUDE_DIR : AGENTS_DIR;
+}
 
 export interface CliOptions {
   root: string;
@@ -38,6 +47,10 @@ export interface DirState {
   dir: string;
   claude: EntryState;
   agents: EntryState;
+  /** State of <dir>/.claude/skills (directory, symlink, or missing). */
+  claudeSkills: EntryState;
+  /** State of <dir>/.agents/skills (directory, symlink, or missing). */
+  agentsSkills: EntryState;
 }
 
 export type PlannedAction =
@@ -49,17 +62,21 @@ export type PlannedAction =
       sourcePath: string;
       /** Whether the link file currently exists and must be removed first. */
       replacesExisting: boolean;
-      /** Whether existing entry is a regular file (vs a stale symlink). */
+      /** Whether existing entry is real content (regular file or real directory) vs a stale symlink. */
       replacesRegularFile: boolean;
+      /** True when linking a directory (e.g. skills/), false for a single file. */
+      isDirectory: boolean;
     }
   | {
       type: "promote-to-source";
-      /** Existing file that will be renamed (e.g. AGENTS.md in a folder where CLAUDE.md is source). */
+      /** Existing entry that will be renamed (e.g. AGENTS.md in a folder where CLAUDE.md is source). */
       fromPath: string;
-      /** New name for that file (e.g. CLAUDE.md). */
+      /** New name for that entry (e.g. CLAUDE.md). */
       toPath: string;
       /** Then create symlink at fromPath -> toPath. */
       linkBack: true;
+      /** True when promoting a directory (e.g. skills/), false for a single file. */
+      isDirectory: boolean;
     }
   | {
       type: "create-root-source";

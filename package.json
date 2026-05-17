@@ -1,6 +1,6 @@
 {
   "name": "agentln",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Cross-platform CLI to manage symlinks between CLAUDE.md and AGENTS.md across a repository.",
   "keywords": [
     "claude",

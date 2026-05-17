@@ -1,8 +1,12 @@
 import path from "node:path";
 
 import {
+  AGENTS_DIR,
   AGENTS_FILE,
+  CLAUDE_DIR,
   CLAUDE_FILE,
+  SKILLS_SUBDIR,
+  sourceDirFor,
   type DirState,
   type EntryState,
   type PlannedAction,
@@ -37,6 +41,13 @@ function entryFor(dir: DirState, name: SourceName): EntryState {
   return name === CLAUDE_FILE ? dir.claude : dir.agents;
 }
 
+interface ReconcileOutcome {
+  /** Actions to append to the plan. */
+  actions: PlannedAction[];
+  /** "clean" if nothing to do, "empty" if both sides are missing, "changed" otherwise. */
+  status: "clean" | "empty" | "changed";
+}
+
 export function buildPlan(input: PlanInput): Plan {
   const { root, source, dirs, bootstrapRoot, force } = input;
   const actions: PlannedAction[] = [];
@@ -44,6 +55,8 @@ export function buildPlan(input: PlanInput): Plan {
   let emptyCount = 0;
 
   const otherName = linkName(source);
+  const sourceDir = sourceDirFor(source);
+  const otherDir = sourceDir === CLAUDE_DIR ? AGENTS_DIR : CLAUDE_DIR;
 
   if (bootstrapRoot) {
     actions.push({
@@ -54,76 +67,125 @@ export function buildPlan(input: PlanInput): Plan {
 
   for (const dir of dirs) {
     const isRootDir = dir.dir === root;
-    const sourceEntry = entryFor(dir, source);
-    const linkEntry = entryFor(dir, otherName);
 
-    const sourcePresent =
-      sourceEntry.kind === "regular-file" ||
-      (sourceEntry.kind === "correct-symlink" && !isRootDir) ||
-      // After bootstrap the root source will exist on disk by the time we run.
-      (isRootDir && bootstrapRoot);
+    // --- File pair: CLAUDE.md <-> AGENTS.md ---
+    const fileOutcome = reconcilePair({
+      sourceEntry: entryFor(dir, source),
+      linkEntry: entryFor(dir, otherName),
+      sourcePath: path.join(dir.dir, source),
+      linkPath: path.join(dir.dir, otherName),
+      isDirectory: false,
+      // The root source is bootstrapped earlier, so treat it as present at planning time.
+      sourceConsideredPresent: isRootDir && bootstrapRoot,
+      force,
+    });
 
-    const linkPresent = linkEntry.kind !== "missing";
+    // --- Directory pair: .claude/skills <-> .agents/skills ---
+    const skillsOutcome = reconcilePair({
+      sourceEntry: skillsEntryFor(dir, sourceDir),
+      linkEntry: skillsEntryFor(dir, otherDir),
+      sourcePath: path.join(dir.dir, sourceDir, SKILLS_SUBDIR),
+      linkPath: path.join(dir.dir, otherDir, SKILLS_SUBDIR),
+      isDirectory: true,
+      sourceConsideredPresent: false,
+      force,
+    });
 
-    // Nothing in this directory to manage.
-    if (!sourcePresent && !linkPresent) {
-      emptyCount++;
-      continue;
-    }
+    actions.push(...fileOutcome.actions, ...skillsOutcome.actions);
 
-    // Source exists (or will after bootstrap). Just ensure the link mirrors it.
-    if (sourcePresent) {
-      const desired = ensureLink({
-        sourceName: source,
-        linkName: otherName,
-        linkEntry,
-        dir: dir.dir,
-        force,
-      });
-      if (desired === "ok") {
-        cleanCount++;
-      } else {
-        actions.push(desired);
-      }
-      continue;
-    }
-
-    // No source file in this directory but the link file exists as a regular
-    // file (or stale/broken symlink). Promote it to source, then link back.
-    if (
-      linkEntry.kind === "regular-file" ||
-      linkEntry.kind === "incorrect-symlink" ||
-      linkEntry.kind === "broken-symlink"
-    ) {
-      const sourcePath = path.join(dir.dir, source);
-      actions.push({
-        type: "promote-to-source",
-        fromPath: linkEntry.path,
-        toPath: sourcePath,
-        linkBack: true,
-      });
-    } else {
-      actions.push({
-        type: "skip",
-        path: linkEntry.path,
-        reason: `unexpected entry kind: ${linkEntry.kind}`,
-      });
-    }
+    const combined = combineStatus(fileOutcome.status, skillsOutcome.status);
+    if (combined === "clean") cleanCount++;
+    else if (combined === "empty") emptyCount++;
   }
 
   return { actions, cleanCount, emptyCount };
 }
 
-function ensureLink(args: {
-  sourceName: SourceName;
-  linkName: SourceName;
+function combineStatus(
+  a: ReconcileOutcome["status"],
+  b: ReconcileOutcome["status"],
+): ReconcileOutcome["status"] {
+  if (a === "changed" || b === "changed") return "changed";
+  if (a === "clean" || b === "clean") return "clean";
+  return "empty";
+}
+
+function skillsEntryFor(dir: DirState, which: typeof CLAUDE_DIR | typeof AGENTS_DIR): EntryState {
+  return which === CLAUDE_DIR ? dir.claudeSkills : dir.agentsSkills;
+}
+
+interface ReconcileArgs {
+  sourceEntry: EntryState;
   linkEntry: EntryState;
-  dir: string;
+  sourcePath: string;
+  linkPath: string;
+  isDirectory: boolean;
+  /** Treat the source as present even if the current entry says it's missing. */
+  sourceConsideredPresent: boolean;
+  force: boolean;
+}
+
+function reconcilePair(args: ReconcileArgs): ReconcileOutcome {
+  const { sourceEntry, linkEntry, sourcePath, linkPath, isDirectory, force } = args;
+
+  const sourcePresent =
+    args.sourceConsideredPresent ||
+    sourceEntry.kind === "regular-file" ||
+    sourceEntry.kind === "correct-symlink";
+
+  const linkPresent = linkEntry.kind !== "missing";
+
+  if (!sourcePresent && !linkPresent) {
+    return { actions: [], status: "empty" };
+  }
+
+  if (sourcePresent) {
+    const desired = ensureLink({ linkEntry, sourcePath, linkPath, isDirectory, force });
+    if (desired === "ok") return { actions: [], status: "clean" };
+    return { actions: [desired], status: "changed" };
+  }
+
+  // No source present in this directory; promote the link if it has real
+  // content (or even just a salvageable stale symlink target).
+  if (
+    linkEntry.kind === "regular-file" ||
+    linkEntry.kind === "incorrect-symlink" ||
+    linkEntry.kind === "broken-symlink"
+  ) {
+    return {
+      actions: [
+        {
+          type: "promote-to-source",
+          fromPath: linkEntry.path,
+          toPath: sourcePath,
+          linkBack: true,
+          isDirectory,
+        },
+      ],
+      status: "changed",
+    };
+  }
+
+  return {
+    actions: [
+      {
+        type: "skip",
+        path: linkEntry.path,
+        reason: `unexpected entry kind: ${linkEntry.kind}`,
+      },
+    ],
+    status: "changed",
+  };
+}
+
+function ensureLink(args: {
+  linkEntry: EntryState;
+  sourcePath: string;
+  linkPath: string;
+  isDirectory: boolean;
   force: boolean;
 }): PlannedAction | "ok" {
-  const { sourceName, linkEntry, dir, force } = args;
-  const sourcePath = path.join(dir, sourceName);
-  const linkPath = linkEntry.path;
+  const { linkEntry, sourcePath, linkPath, isDirectory, force } = args;
 
   if (linkEntry.kind === "correct-symlink") return "ok";
 
@@ -134,6 +196,7 @@ function ensureLink(args: {
       sourcePath,
       replacesExisting: false,
       replacesRegularFile: false,
+      isDirectory,
     };
   }
 
@@ -147,16 +210,21 @@ function ensureLink(args: {
       sourcePath,
       replacesExisting: true,
       replacesRegularFile: false,
+      isDirectory,
     };
   }
 
   if (linkEntry.kind === "regular-file") {
+    // "regular-file" here means real content of the expected kind (real file
+    // for the MD pair, real directory for the skills pair). Replacing real
+    // content requires --force so we don't silently destroy data.
     return {
       type: "create-symlink",
       linkPath,
       sourcePath,
       replacesExisting: true,
       replacesRegularFile: !force,
+      isDirectory,
     };
   }
 
@@ -173,16 +241,19 @@ export function describeAction(action: PlannedAction): string {
       return `create empty source file → ${action.sourcePath}`;
     case "create-symlink": {
       const rel = path.relative(path.dirname(action.linkPath), action.sourcePath);
+      const noun = action.isDirectory ? "directory symlink" : "symlink";
+      const realNoun = action.isDirectory ? "directory" : "regular file";
       const verb = action.replacesExisting
         ? action.replacesRegularFile
-          ? "replace regular file"
-          : "replace stale symlink"
-        : "create symlink";
+          ? `replace ${realNoun}`
+          : `replace stale ${noun}`
+        : `create ${noun}`;
       return `${verb} ${action.linkPath} → ${rel}`;
     }
     case "promote-to-source": {
       const rel = path.relative(path.dirname(action.fromPath), action.toPath);
-      return `rename ${action.fromPath} → ${action.toPath}, then link ${path.basename(action.fromPath)} → ${rel}`;
+      const noun = action.isDirectory ? "directory" : "file";
+      return `rename ${noun} ${action.fromPath} → ${action.toPath}, then link ${path.basename(action.fromPath)} → ${rel}`;
     }
     case "skip":
       return `skip ${action.path} (${action.reason})`;
